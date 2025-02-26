@@ -1,64 +1,43 @@
-import requests
-import laspy
-import open3d as o3d
-import numpy as np
 
-# --- Define Target Location using Latitude and Longitude ---
-lat, lon = 37.5, -122.5  # Replace with your desired lat, lon coordinates
-delta = 0.01             # Offset to create a bounding box around the point
 
-south = lat - delta
-north = lat + delta
-west = lon - delta
-east = lon + delta
+from ipyleaflet import Map, WidgetControl
+from pythreejs import (
+    Mesh, BoxGeometry, MeshStandardMaterial, AmbientLight,
+    PerspectiveCamera, Scene, Renderer, OrbitControls
+)
+import ipywidgets as widgets
 
-# --- OpenTopography API Setup ---
-API_KEY = "79e540e8f1580d7cea1bbefa659b88b0"
-dataset_id = "OTNED.012021.4269.3"  # Replace with a valid dataset identifier from the data catalog
 
-# Use the updated endpoint under the portal subdomain
-api_url = "https://portal.opentopography.org/API/lidar"
+latitude=32.971425,
+longitude=-96.822403,
 
-# Construct the API parameters.
-params = {
-    "API_Key": API_KEY,
-    "dataset": dataset_id,  # Required dataset identifier
-    "south": south,
-    "north": north,
-    "west": west,
-    "east": east,
-    "outputFormat": "LAS"  # Requesting the LAS file format
-}
+# Create an ipyleaflet Map centered on a sample location (latitude, longitude)
+m = Map(center=(latitude, longitude), zoom=16)
 
-print("Requesting LiDAR data from OpenTopography...")
-response = requests.get(api_url, params=params)
+# Create a simple 3D cube using pythreejs
+cube = Mesh(
+    geometry=BoxGeometry(width=1, height=1, depth=1),
+    material=MeshStandardMaterial(color='red')
+)
 
-if response.status_code == 200:
-    las_filename = "downloaded.las"
-    with open(las_filename, "wb") as f:
-        f.write(response.content)
-    print("LiDAR data downloaded successfully and saved as", las_filename)
-else:
-    print("Error downloading LiDAR data:", response.status_code)
-    print("Response:", response.text)
-    exit(1)
+# Create a 3D scene containing the cube and an ambient light
+scene = Scene(children=[
+    cube,
+    AmbientLight(color='#ffffff')
+])
 
-# --- Process and Visualize the LiDAR Data ---
-# Load the downloaded LAS file using laspy
-las = laspy.read(las_filename)
+# Set up a perspective camera for the 3D scene
+camera = PerspectiveCamera(position=[3, 3, 3], fov=75)
 
-# Extract point coordinates
-points = np.vstack((las.x, las.y, las.z)).transpose()
+# Enable orbit controls for interactive rotation
+controls = [OrbitControls(controlling=camera)]
 
-# Create an Open3D PointCloud object and set its points
-pcd = o3d.geometry.PointCloud()
-pcd.points = o3d.utility.Vector3dVector(points)
+# Create a Renderer for the 3D scene; adjust width and height as needed.
+renderer = Renderer(camera=camera, scene=scene, controls=controls, width=400, height=400)
 
-# Optionally, set grayscale colors based on elevation (z-value)
-min_z = points[:, 2].min()
-max_z = points[:, 2].max()
-colors = (points[:, 2] - min_z) / (max_z - min_z)
-pcd.colors = o3d.utility.Vector3dVector(np.repeat(colors[:, None], 3, axis=1))
+# Embed the 3D renderer as a widget control on the map (placed at top-right)
+widget_control = WidgetControl(widget=renderer, position='topright')
+m.add_control(widget_control)
 
-# Visualize the point cloud using Open3D
-o3d.visualization.draw_geometries([pcd])
+# Display the map with the embedded 3D scene
+m
