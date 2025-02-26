@@ -77,6 +77,7 @@ def create_column_pv(base_point, height, col_width=0.2, col_thickness=0.2):
     return create_beam_pv(base_point, top_pt, col_width, col_thickness)
 
 
+
 def create_purlin_pv(start, end, purlin_width=0.1, purlin_thickness=0.1):
     """
     c-purlin as a rectangular beam from 'start' to 'end' with given width and thickness.
@@ -146,7 +147,7 @@ def design_carport_2Dgrid_pv(
     racking_actors = []  # columns, footings, purlins
 
     total_x = n_mods_x * module_width + (n_mods_x - 1) * mod_gap
-    n_cols_x = max(min_n_columns, int(math.ceil(total_x / max_column_spacing)) + 1)// 2  # COLUMNS IN THE X-AXIS (// means integer division)
+    n_cols_x = max(min_n_columns, int(math.ceil(total_x / max_column_spacing)) + 1)// 2# COLUMNS IN THE X-AXIS (//)-means interger division
     col_spacing_x = total_x / (n_cols_x - 1) if n_cols_x > 1 else total_x
     total_y = n_mods_y * module_height + (n_mods_y - 1) * mod_gap
     lines_y = n_strings_y + 1
@@ -248,22 +249,6 @@ def design_carport_2Dgrid_pv(
     grid_actor = plotter.add_mesh(grid_mesh, style='wireframe', color='gray', opacity=0.5)
     plotter.grid_actor = grid_actor
 
-    # --------------------------------------------------------------------------
-    # Add watermark text "MARY KAY" above the panels (watermark feature)
-    # --------------------------------------------------------------------------
-    y_value = total_y / 2
-    frac = y_value / total_y if total_y > 1e-9 else 0
-    base_z = (1 - frac) * front_col_top_z + frac * final_col_top_z
-    mid_point = (total_x / 2, y_value, base_z + module_clearance)
-    text_mesh = pv.Text3D("MARY KAY", depth=0.1)
-    text_mesh.scale([10, 10, 10])
-    text_center = text_mesh.center
-    translation = np.array(mid_point) - np.array(text_center)
-    text_mesh.translate(translation, inplace=True)
-    text_mesh.rotate_x(tilt_degs, point=mid_point, inplace=True)
-    plotter.add_mesh(text_mesh, color='white')
-    # --------------------------------------------------------------------------
-
     # Attach actor groups to the plotter for later access
     plotter.solar_panel_actors = solar_panel_actors
     plotter.racking_actors = racking_actors
@@ -272,31 +257,32 @@ def design_carport_2Dgrid_pv(
     return plotter
 
 
+
 ##############################################################################
 # Main
 ##############################################################################
 
-southArray  = [61,8]  # Addison Project
-westArray = [68,30]   # Addison Project
+southArray  = [61,8] #Addison Project
+westArray = [68,30] #Addison Project
 
-selected  = westArray
+selected  = southArray
 
 selectedx = selected[0]
 selectedy = selected[1]
 
 if __name__ == "__main__":
     plotter = design_carport_2Dgrid_pv(
-        n_mods_x=68,
-        n_mods_y=30,
-        tilt_degs=2.5,
+        n_mods_x=selectedx,
+        n_mods_y=selectedy,
+        tilt_degs=10.0,
         front_col_top_z=4.5,
-        purlin_splice_interval=3.0,
+        purlin_splice_interval=2.0,
         z_above_purlins=0.15,
         module_clearance=0.15,
-        column_width=0.75,        # custom column width
-        column_thickness=0.75,     # custom column thickness
-        purlin_width=0.35,         # custom purlin width
-        purlin_thickness=0.35,     # custom purlin thickness
+        column_width=0.25,        # custom column width
+        column_thickness=0.25,     # custom column thickness
+        purlin_width=0.12,         # custom purlin width
+        purlin_thickness=0.12,     # custom purlin thickness
         color_footing=flamingo_pink,
         color_column=flamingo_pink,
         color_purlin=flamingo_pink,
