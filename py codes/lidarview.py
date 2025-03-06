@@ -1,121 +1,222 @@
 import math
 import numpy as np
-import pyvista as pv  # pip install pyvista
+import trimesh
+from shapely.geometry import Polygon
 
-flamingo_pink = '#FC8EAC'
 
 
 ##############################################################################
-# 1) Utility: building PyVista geometry for "beam"-style shapes
+# 1) Beam utility with Trimesh
 ##############################################################################
-def create_beam_pv(start, end, width, thickness):
+
+def create_beam_tm(start, end, width, thickness):
+    """
+    Returns a Trimesh box that spans from `start` to `end`,
+    with cross-section = (width x thickness) oriented perpendicular
+    to (end - start).
+    """
     start = np.array(start, dtype=float)
     end = np.array(end, dtype=float)
     direction = end - start
     length = np.linalg.norm(direction)
+
     if length < 1e-9:
-        raise ValueError("create_beam_pv: zero-length beam")
-    d = direction / length
-    ref = np.array([0, 0, 1], dtype=float)
-    if abs(np.dot(d, ref)) > 0.99:
-        ref = np.array([0, 1, 0], dtype=float)
-    v = np.cross(d, ref)
-    v /= np.linalg.norm(v)
-    w = np.cross(d, v)
-    w /= np.linalg.norm(w)
-    a = width / 2.0
-    b = thickness / 2.0
-    corners_start = [
-        start + (+a * v + b * w),
-        start + (-a * v + b * w),
-        start + (-a * v - b * w),
-        start + (+a * v - b * w),
-    ]
-    corners_end = [
-        end + (+a * v + b * w),
-        end + (-a * v + b * w),
-        end + (-a * v - b * w),
-        end + (+a * v - b * w),
-    ]
-    vertices = np.array(corners_start + corners_end, dtype=float)
-    faces_array = np.hstack([
-        [4, 0, 1, 2, 3],
-        [4, 4, 5, 6, 7],
-        [4, 0, 1, 5, 4],
-        [4, 1, 2, 6, 5],
-        [4, 2, 3, 7, 6],
-        [4, 3, 0, 4, 7]
-    ])
-    return pv.PolyData(vertices, faces_array)
+        raise ValueError("Zero-length beam")
+
+    # Create a box aligned with +X of size (length, width, thickness)
+    box = trimesh.creation.box(extents=(length, width, thickness))
+
+    # Shift so that one end is at (0,0,0) instead of centered on origin
+    box.apply_translation((length / 2.0, 0, 0))
+
+    # Rotate the box so that its X-axis aligns with the beam direction
+    from trimesh.transformations import rotation_matrix
+    x_axis = np.array([1, 0, 0], dtype=float)
+    beam_dir = direction / length
+
+    # angle between x_axis and beam_dir
+    dot_val = np.clip(np.dot(x_axis, beam_dir), -1.0, 1.0)
+    angle = math.acos(dot_val)
+
+    rot_axis = np.cross(x_axis, beam_dir)
+    norm_ax = np.linalg.norm(rot_axis)
+    if norm_ax < 1e-9:
+        # Parallel or anti-parallel
+        rot_axis = np.array([0, 0, 1], dtype=float)  # arbitrary
+    else:
+        rot_axis /= norm_ax
+
+    rot_mat_4x4 = rotation_matrix(angle, rot_axis)
+    box.apply_transform(rot_mat_4x4)
+
+    # Finally translate the box so that "start" is at the correct global location
+    box.apply_translation(start)
+
+    return box
 
 
-def create_footing_pv(center, width=0.5, length=0.5, depth=0.3):
+##############################################################################
+# 2) Footings, columns, purlins, modules
+##############################################################################
+
+def create_footing_tm(center, width=0.5, length=0.5, depth=0.3):
+    """
+    Create a footing from z=0 down to z=-depth, with plan view ~ (length x width).
+    """
     top = np.array([center[0], center[1], 0], dtype=float)
     bottom = top + np.array([0, 0, -depth], dtype=float)
-    return create_beam_pv(top, bottom, length, width)
+    return create_beam_tm(top, bottom, length, width)
 
 
-def create_column_pv(base_point, height, col_width=0.2, col_thickness=0.2):
-    top_pt = base_point + np.array([0, 0, height], dtype=float)
-    return create_beam_pv(base_point, top_pt, col_width, col_thickness)
+def create_column_tm(base_point, height, col_width=0.2, col_thickness=0.2):
+    """
+    Create a vertical column from base_point to base_point+(0,0,height).
+    """
+    top_pt = np.array(base_point, dtype=float) + np.array([0, 0, height], dtype=float)
+    return create_beam_tm(base_point, top_pt, col_width, col_thickness)
 
 
-def create_purlin_pv(start, end, purlin_width=0.1, purlin_thickness=0.1):
-    return create_beam_pv(start, end, purlin_width, purlin_thickness)
+def create_purlin_tm(start, end, purlin_width=0.1, purlin_thickness=0.1):
+    """
+    Create a rectangular beam from start->end with cross-section purlin_width x purlin_thickness.
+    """
+    return create_beam_tm(start, end, purlin_width, purlin_thickness)
+
+
+def create_module_tm(cornerA, cornerB, cornerC, cornerD, thickness=0.01):
+    """
+    Create a thin rectangular panel using corner A->B->C->D in 3D.
+    We'll do a simple approach: measure the bounding box in X and Y,
+    extrude a 2D rectangle by 'thickness' in the normal direction.
+    """
+    # We'll compute dimension from corners, but let's assume they're
+    # basically a rectangle in the plane.
+    cornerA = np.array(cornerA, dtype=float)
+    cornerB = np.array(cornerB, dtype=float)
+    cornerC = np.array(cornerC, dtype=float)
+    # The 4th cornerD is not used for dimension, but let's keep it consistent.
+
+    AB = cornerB - cornerA
+    AD = cornerD - cornerA
+    # We'll interpret AB as local x direction, AD as local y direction
+    width = np.linalg.norm(AB)
+    height = np.linalg.norm(AD)
+
+    # Make a 2D polygon in local coords
+    polygon_2d = np.array([
+        [0.0, 0.0],
+        [width, 0.0],
+        [width, height],
+        [0.0, height]
+    ])
+
+    # polygon_2d is your Nx2 NumPy array of 2D vertices
+    poly_2d = Polygon(polygon_2d)
+
+    # Extrude that 2D polygon by thickness
+    panel = trimesh.creation.extrude_polygon(poly_2d, thickness, engine="earcut")
+
+    # Now we must align panel's local X->AB, local Y->AD, and place it at cornerA
+    # 1) The extrude_polygon puts the "plane" in XY, normal in +Z
+    #    We'll figure out the actual normal from AB x AD.
+    from trimesh.transformations import rotation_matrix, translation_matrix
+
+    # normal vector from cross(AB, AD):
+    normal = np.cross(AB, AD)
+    norm_len = np.linalg.norm(normal)
+    if norm_len < 1e-9:
+        raise ValueError("Module has zero area (AB x AD ~ 0)")
+
+    normal /= norm_len
+
+    # By default, extrude_polygon is normal = +Z => local Z. We'll rotate that +Z to align with 'normal'
+    # angle:
+    dot_val = np.clip(np.dot([0, 0, 1], normal), -1.0, 1.0)
+    angle = math.acos(dot_val)
+    rot_axis = np.cross([0, 0, 1], normal)
+    if np.linalg.norm(rot_axis) < 1e-9:
+        rot_axis = np.array([1, 0, 0], dtype=float)
+    else:
+        rot_axis /= np.linalg.norm(rot_axis)
+    R = rotation_matrix(angle, rot_axis)
+    panel.apply_transform(R)
+
+    # Now let's align the local X->AB direction. After normal alignment, local X might not match AB.
+    # We can do a further rotation in the plane of the panel if desired.
+    # For a rectangle, that gets more complex. Let's skip second rotation for simplicity.
+    #
+    # Finally, translate to cornerA in 3D
+    # The extruded shape currently has a corner at (0,0,0).
+    # But after rotation, that corner might have moved.
+    # We can measure the bounding box min corner after rotation,
+    # or we can transform in two steps (plane alignment, then plane translation).
+
+    # Easiest: do a simpler approach:
+    #   - Place the center of the panel at (width/2, height/2, 0) in local coords
+    #   - After normal rotation, move it so (0,0,0) in local -> cornerA in global.
+    # We'll do a direct translation now:
+    T = translation_matrix(cornerA)
+    panel.apply_transform(T)
+
+    return panel
 
 
 ##############################################################################
-# 2) Modules as thin rectangular panels (representing solar panels)
+# 3) Full Carport: columns, footings, purlins, sub-purlins, modules
 ##############################################################################
-def create_module_pv(cornerA, cornerB, cornerC, cornerD):
-    vertices = np.array([cornerA, cornerB, cornerC, cornerD], dtype=float)
-    faces_array = np.hstack([[4, 0, 1, 2, 3]])
-    return pv.PolyData(vertices, faces_array)
-
-
-##############################################################################
-# 3) Putting it all together: 2D grid of columns, purlins, modules, and optional sub-purlins
-##############################################################################
-def design_carport_2Dgrid_pv(
+def design_carport_2Dgrid_tm(
+        # module geometry
         module_width=1.134,
         module_height=2.462,
         n_mods_x=5,
         n_mods_y=3,
         mod_gap=0.05,
+        # sub-rows in Y
         n_strings_y=2,
+        # tilt
         tilt_degs=10.0,
         col_base_z=0.0,
         front_col_top_z=3.0,
         final_col_top_z=None,
+        # footings/columns
         footing_size=0.5,
         footing_depth=0.3,
         max_column_spacing=5.8,
         min_n_columns=2,
+        # purlin splice
         purlin_splice_interval=5.0,
-        z_above_purlins=0.1,
-        module_clearance=0.16,
+        # module clearance
+        module_clearance=0.15,
+        # dims
         column_width=0.2,
         column_thickness=0.2,
         purlin_width=0.1,
         purlin_thickness=0.1,
-        add_sub_purlins=False,
-        sub_purlin_offset=0.5,  # Unused in this approach
-        color_footing='saddlebrown',
-        color_column='silver',
-        color_purlin='gray',
-        color_module='lightskyblue'
+        # sub-purlins
+        add_sub_purlins=True,
+        sub_purlin_offset=0.7,
 ):
-    plotter = pv.Plotter(off_screen=True)  # off_screen for export
+    """
+    Return a single Trimesh representing the entire carport 2D grid:
+      - footings, columns
+      - purlins
+      - optional sub-purlins
+      - solar modules
+    """
     tilt_radians = math.radians(tilt_degs)
-    solar_panel_actors = []
-    racking_actors = []
-    module_subpurlin_actors = []  # For module sub-purlins
 
+    # Compute total X, Y extents
     total_x = n_mods_x * module_width + (n_mods_x - 1) * mod_gap
-    n_cols_x = max(min_n_columns, int(math.ceil(total_x / max_column_spacing)) + 1) // 2
-    col_spacing_x = total_x / (n_cols_x - 1) if n_cols_x > 1 else total_x
     total_y = n_mods_y * module_height + (n_mods_y - 1) * mod_gap
+
+    # number of columns in x
+    n_cols_x = max(min_n_columns, int(math.ceil(total_x / max_column_spacing)) + 1) // 2
+    if n_cols_x < 1:
+        n_cols_x = 1
+    col_spacing_x = total_x / (n_cols_x - 1) if n_cols_x > 1 else total_x
+
     lines_y = n_strings_y + 1
+
     if final_col_top_z is None:
         final_col_top_z = front_col_top_z + total_y * math.sin(tilt_radians)
 
@@ -125,34 +226,17 @@ def design_carport_2Dgrid_pv(
         z_ = (1 - frac) * front_col_top_z + frac * final_col_top_z
         return y_, z_
 
-    def module_z(y):
-        frac = y / total_y if total_y > 1e-9 else 0
-        base_z = (1 - frac) * front_col_top_z + frac * final_col_top_z
-        return base_z + module_clearance
+    # We store all shapes in a list, then merge at the end
+    all_meshes = []
 
-    col_positions = []
-    for j in range(lines_y):
-        y_j, top_zj = line_j_yz(j)
-        row_positions = []
-        for i in range(n_cols_x):
-            x_i = i * col_spacing_x
-            foot_mesh = create_footing_pv([x_i, y_j], footing_size, footing_size, footing_depth)
-            actor = plotter.add_mesh(foot_mesh, color=color_footing, show_edges=True)
-            racking_actors.append(actor)
-            height = top_zj - col_base_z
-            col_mesh = create_column_pv(np.array([x_i, y_j, col_base_z]), height,
-                                        col_width=column_width, col_thickness=column_thickness)
-            actor = plotter.add_mesh(col_mesh, color=color_column, show_edges=True)
-            racking_actors.append(actor)
-            row_positions.append([x_i, y_j, top_zj])
-        col_positions.append(row_positions)
-
-    def add_purlin_segment(ptA, ptB):
-        dist = np.linalg.norm(np.array(ptB) - np.array(ptA))
+    # Helper to splice purlins if needed
+    def add_purlin_segments(ptA, ptB):
+        ptA = np.array(ptA, dtype=float)
+        ptB = np.array(ptB, dtype=float)
+        dist = np.linalg.norm(ptB - ptA)
         if dist <= purlin_splice_interval:
-            pm = create_purlin_pv(ptA, ptB, purlin_width=purlin_width, purlin_thickness=purlin_thickness)
-            actor = plotter.add_mesh(pm, color=color_purlin, show_edges=True)
-            racking_actors.append(actor)
+            beam = create_purlin_tm(ptA, ptB, purlin_width, purlin_thickness)
+            all_meshes.append(beam)
         else:
             segs = int(math.ceil(dist / purlin_splice_interval))
             for s in range(segs):
@@ -160,46 +244,89 @@ def design_carport_2Dgrid_pv(
                 beta = min(1.0, (s + 1) / segs)
                 segA = ptA + alpha * (ptB - ptA)
                 segB = ptA + beta * (ptB - ptA)
-                pm = create_purlin_pv(segA, segB, purlin_width=purlin_width, purlin_thickness=purlin_thickness)
-                actor = plotter.add_mesh(pm, color=color_purlin, show_edges=True)
-                racking_actors.append(actor)
+                beam = create_purlin_tm(segA, segB, purlin_width, purlin_thickness)
+                all_meshes.append(beam)
 
+    # Build columns & footings
+    col_positions = []
+    for j in range(lines_y):
+        y_j, top_zj = line_j_yz(j)
+        row_positions = []
+        for i in range(n_cols_x):
+            x_i = i * col_spacing_x
+            # Footing
+            footing_mesh = create_footing_tm([x_i, y_j], footing_size, footing_size, footing_depth)
+            all_meshes.append(footing_mesh)
+
+            # Column
+            height = top_zj - col_base_z
+            col_mesh = create_column_tm([x_i, y_j, col_base_z],
+                                        height,
+                                        column_width,
+                                        column_thickness)
+            all_meshes.append(col_mesh)
+
+            row_positions.append([x_i, y_j, top_zj])
+        col_positions.append(row_positions)
+
+    # Add main purlins
+    # Horizontal (in x) for each y-line
     for j in range(lines_y):
         rowp = col_positions[j]
         for i in range(n_cols_x - 1):
             ptA = np.array(rowp[i])
             ptB = np.array(rowp[i + 1])
-            add_purlin_segment(ptA, ptB)
+            add_purlin_segments(ptA, ptB)
+
+    # Vertical (in y) between consecutive rows
     for j in range(lines_y - 1):
         rowA = col_positions[j]
         rowB = col_positions[j + 1]
         for i in range(n_cols_x):
             ptA = np.array(rowA[i])
             ptB = np.array(rowB[i])
-            add_purlin_segment(ptA, ptB)
+            add_purlin_segments(ptA, ptB)
 
+    # Optionally add sub-purlins
+    if add_sub_purlins and n_mods_y > 0:
+        mod_y_sp = 0.0
+        if n_mods_y > 1:
+            mod_y_sp = (total_y - n_mods_y * module_height) / (n_mods_y - 1)
+
+        for iy in range(n_mods_y):
+            y_front = iy * (module_height + mod_y_sp)
+            y_back = y_front + module_height
+            mid_y = 0.5 * (y_front + y_back)
+
+            # sub_purlin_offset up/down from mid_y
+            sub_y1 = mid_y - sub_purlin_offset
+            sub_y2 = mid_y + sub_purlin_offset
+
+            # top z at that y
+            frac = mid_y / total_y if total_y > 1e-9 else 0
+            top_z = (1 - frac) * front_col_top_z + frac * final_col_top_z
+            # place sub-purlin so top is at top_z => center is top_z - purlin_thickness/2
+            z_val = top_z + module_clearance - (purlin_thickness / 2.0)
+
+            x_left = 0.0
+            x_right = total_x
+            sp1 = create_purlin_tm([x_left, sub_y1, z_val],
+                                   [x_right, sub_y1, z_val],
+                                   purlin_width, purlin_thickness)
+            sp2 = create_purlin_tm([x_left, sub_y2, z_val],
+                                   [x_right, sub_y2, z_val],
+                                   purlin_width, purlin_thickness)
+            all_meshes.append(sp1)
+            all_meshes.append(sp2)
+
+    # Place modules
     mod_x_sp = (total_x - n_mods_x * module_width) / (n_mods_x - 1) if n_mods_x > 1 else 0
     mod_y_sp = (total_y - n_mods_y * module_height) / (n_mods_y - 1) if n_mods_y > 1 else 0
 
-    for iy in range(n_mods_y):
-        y_front = iy * (module_height + mod_y_sp)
-        y_back = y_front + module_height
-        mid_y = (y_front + y_back) / 2.0
-        offset = 0.7
-        sub_y1 = mid_y - offset
-        sub_y2 = mid_y + offset
-        panel_top = module_z(mid_y)
-        z_val = panel_top - (purlin_thickness / 2.0)
-        x_left = 0.0
-        x_right = total_x
-        sub_beam1 = create_purlin_pv([x_left, sub_y1, z_val], [x_right, sub_y1, z_val],
-                                     purlin_width, purlin_thickness)
-        sub_beam2 = create_purlin_pv([x_left, sub_y2, z_val], [x_right, sub_y2, z_val],
-                                     purlin_width, purlin_thickness)
-        actor1 = plotter.add_mesh(sub_beam1, color=flamingo_pink, show_edges=True)
-        actor2 = plotter.add_mesh(sub_beam2, color=flamingo_pink, show_edges=True)
-        module_subpurlin_actors.extend([actor1, actor2])
-    plotter.module_subpurlin_actors = module_subpurlin_actors
+    def module_z(y):
+        frac = y / total_y if total_y > 1e-9 else 0
+        col_top = (1 - frac) * front_col_top_z + frac * final_col_top_z
+        return col_top + module_clearance
 
     for ix in range(n_mods_x):
         x_left = ix * (module_width + mod_x_sp)
@@ -211,81 +338,46 @@ def design_carport_2Dgrid_pv(
             B = [x_right, y_front, module_z(y_front)]
             C = [x_right, y_back, module_z(y_back)]
             D = [x_left, y_back, module_z(y_back)]
-            module_points = np.array([A, B, C, D], dtype=float)
-            faces = np.hstack([[4, 0, 1, 2, 3]])
-            actor = plotter.add_mesh(pv.PolyData(module_points, faces),
-                                     color=color_module, show_edges=True, opacity=0.9)
-            solar_panel_actors.append(actor)
+            mod_mesh = create_module_tm(A, B, C, D, thickness=0.02)
+            all_meshes.append(mod_mesh)
 
-    grid_mesh = pv.Plane(center=(total_x / 2, total_y / 2, 0),
-                         direction=(0, 0, 1),
-                         i_size=total_x, j_size=total_y,
-                         i_resolution=10, j_resolution=10)
-    grid_actor = plotter.add_mesh(grid_mesh, style='wireframe', color='gray', opacity=0.5)
-    plotter.grid_actor = grid_actor
+    # Merge all into one combined Trimesh
+    if not all_meshes:
+        return None
 
-    y_value = total_y / 2
-    frac = y_value / total_y if total_y > 1e-9 else 0
-    base_z = (1 - frac) * front_col_top_z + frac * final_col_top_z
-    mid_point = (total_x / 2, y_value, base_z + module_clearance)
-    text_mesh = pv.Text3D("MARY KAY", depth=0.0)
-    text_mesh.scale([10, 10, 10])
-    text_center = text_mesh.center
-    translation = np.array(mid_point) - np.array(text_center)
-    text_mesh.translate(translation, inplace=True)
-    text_mesh.rotate_x(tilt_degs, point=mid_point, inplace=True)
-    plotter.add_mesh(text_mesh, color='white')
-
-    plotter.solar_panel_actors = solar_panel_actors
-    plotter.racking_actors = racking_actors
-
-    return plotter
+    combined = trimesh.util.concatenate(all_meshes)
+    return combined
 
 
 ##############################################################################
-# Main: Create carport model and export as a binary glTF (.glb) file
+# 4) Main: choose array size, build the carport, export as glTF
 ##############################################################################
 if __name__ == "__main__":
-    plotter = design_carport_2Dgrid_pv(
-        n_mods_x=68,
-        n_mods_y=30,
-        tilt_degs=2.5,
+    # Example "southArray" or "westArray"
+    southArray = [61, 8]
+    westArray = [68, 30]
+    selected = southArray  # choose one
+
+    selectedx, selectedy = selected[0], selected[1]
+
+    # Build the carport as one mesh
+    carport_mesh = design_carport_2Dgrid_tm(
+        n_mods_x=selectedx,
+        n_mods_y=selectedy,
+        tilt_degs=10.0,
         front_col_top_z=4.5,
-        purlin_splice_interval=3.0,
-        z_above_purlins=0.15,
-        module_clearance=0.16,
-        column_width=0.75,
-        column_thickness=0.75,
-        purlin_width=0.35,
-        purlin_thickness=0.35,
-        color_footing=flamingo_pink,
-        color_column=flamingo_pink,
-        color_purlin=flamingo_pink,
-        color_module=flamingo_pink,
+        purlin_splice_interval=2.0,
+        module_clearance=0.15,
+        column_width=0.25,
+        column_thickness=0.25,
+        purlin_width=0.12,
+        purlin_thickness=0.12,
         add_sub_purlins=True,
-        sub_purlin_offset=0.5
+        sub_purlin_offset=0.7
     )
 
-    # Optional: Uncomment to display interactively
-    # plotter.show()
-
-    # Export the current scene as a binary glTF (.glb) file.
-    try:
-        from vtkmodules.vtkIOExport import vtkGLTFExporter
-
-        exporter = vtkGLTFExporter()
-        exporter.SetRenderWindow(plotter.ren_win)
-
-        # Disable embedding buffers and images, and disable binary mode:
-        if hasattr(exporter, "SetEmbedBuffers"):
-            exporter.SetEmbedBuffers(False)
-        if hasattr(exporter, "SetEmbedImages"):
-            exporter.SetEmbedImages(False)
-        if hasattr(exporter, "SetBinary"):
-            exporter.SetBinary(False)
-
-        exporter.SetFileName("carport_model.gltf")
-        exporter.Write()
-        print("Exported glTF file: carport_model.gltf")
-    except Exception as e:
-        print("Error exporting glTF:", e)
+    if carport_mesh is not None:
+        carport_mesh.export("output/my_carport_trimesh.gltf")
+        print("Exported the carport to my_carport_trimesh.gltf")
+    else:
+        print("No geometry was generated!")
