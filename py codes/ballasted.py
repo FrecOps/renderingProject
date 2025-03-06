@@ -65,19 +65,36 @@ def create_tilted_frame_with_base(panel_width, panel_depth, height_front, tilt_a
                                   beam_width, beam_thickness,
                                   extension_length, extender_x, block_height,
                                   panel_extrude_thickness,
-                                  module_count, single_module_width, module_spacing):
+                                  module_count, single_module_width, module_spacing,
+                                  plotter=None, offset=(0, 0, 0)):
+    """
+    Draws one unit (tilted frame with solar panel) into the provided plotter.
+    The geometry is translated by the given offset.
+    """
+    # If no plotter is provided, create one.
+    if plotter is None:
+        plotter = pv.Plotter()
+
+    # Convert offset to a numpy array for easy arithmetic.
+    offset = np.array(offset, dtype=float)
+
     # Compute back height using the tilt angle (in degrees)
     height_back = height_front + panel_depth * math.tan(math.radians(tilt_angle))
 
-    plotter = pv.Plotter()
-
     # Overall base plane (dimensions defined by the overall frame)
-    base = pv.Plane(center=(panel_width / 2, panel_depth / 2, 0), direction=(0, 0, 1),
+    base_center = (offset[0] + panel_width/2, offset[1] + panel_depth/2, offset[2])
+    base = pv.Plane(center=base_center, direction=(0, 0, 1),
                     i_size=panel_width, j_size=panel_depth, i_resolution=10, j_resolution=10)
     plotter.add_mesh(base, color=color_base, opacity=0.5, show_edges=True)
 
     # Overall base frame corners and labels (for the entire panel)
-    corners = [[0, 0, 0], [panel_width, 0, 0], [panel_width, panel_depth, 0], [0, panel_depth, 0]]
+    # Note: the base corners (of the panel face) start at offset.
+    corners = [
+        [offset[0], offset[1], offset[2]],
+        [offset[0] + panel_width, offset[1], offset[2]],
+        [offset[0] + panel_width, offset[1] + panel_depth, offset[2]],
+        [offset[0], offset[1] + panel_depth, offset[2]]
+    ]
     labels = ['A', 'B', 'C', 'D']
     for i in range(len(corners)):
         start_pt, end_pt = corners[i], corners[(i + 1) % len(corners)]
@@ -85,10 +102,17 @@ def create_tilted_frame_with_base(panel_width, panel_depth, height_front, tilt_a
 
     # Add extensions and blocks at each overall corner (as before)
     for corner, label in zip(corners, labels):
-        ext_end = [corner[0], corner[1] - extension_length, 0] if corner[1] == 0 \
-            else [corner[0], corner[1] + extension_length, 0]
+        # Determine if the corner is on the bottom or top edge based on y-coordinate.
+        if abs(corner[1] - offset[1]) < 1e-6:
+            ext_end = [corner[0], corner[1] - extension_length, 0]
+        else:
+            ext_end = [corner[0], corner[1] + extension_length, 0]
         add_beam(plotter, corner, ext_end, beam_width, beam_thickness, color_frame, f'{label}-Ext')
-        ext_x_end = [ext_end[0] + extender_x if corner[0] == 0 else ext_end[0] - extender_x, ext_end[1], 0]
+        # Determine if the corner is on the left or right edge based on x-coordinate.
+        if abs(corner[0] - offset[0]) < 1e-6:
+            ext_x_end = [ext_end[0] + extender_x, ext_end[1], 0]
+        else:
+            ext_x_end = [ext_end[0] - extender_x, ext_end[1], 0]
         add_beam(plotter, ext_end, ext_x_end, beam_width, beam_thickness, color_frame, f'{label}-ExtX')
         add_beam(plotter, ext_x_end, [ext_x_end[0], corner[1], 0], beam_width, beam_thickness, color_frame)
 
@@ -105,33 +129,28 @@ def create_tilted_frame_with_base(panel_width, panel_depth, height_front, tilt_a
 
     # Vertical beams and overall top frame
     heights = [height_front, height_front, height_back, height_back]
-    top_corners = [[x, y, z] for (x, y, _), z in zip(corners, heights)]
-    for corner, height in zip(corners, heights):
-        add_beam(plotter, corner, [corner[0], corner[1], height], beam_width, beam_thickness, color_frame)
+    top_corners = [[corner[0], corner[1], h] for corner, h in zip(corners, heights)]
+    for corner, h in zip(corners, heights):
+        add_beam(plotter, corner, [corner[0], corner[1], h], beam_width, beam_thickness, color_frame)
     for i in range(len(top_corners)):
         start_pt, end_pt = top_corners[i], top_corners[(i + 1) % len(top_corners)]
         add_beam(plotter, start_pt, end_pt, beam_width, beam_thickness, color_frame)
 
     # --- Add individual module frames on the top face ---
     # Top face corners (from overall top frame)
-    # A_top: front left, B_top: front right, C_top: back right, D_top: back left
     A_top = np.array(top_corners[0])
     B_top = np.array(top_corners[1])
     C_top = np.array(top_corners[2])
     D_top = np.array(top_corners[3])
-    # The overall front edge length is the total panel width.
-    T = panel_width
-    # For each module, compute fraction positions along the front and back edges.
+    T = panel_width  # overall front edge length
     for i in range(module_count):
         frac_start = (i * single_module_width + i * module_spacing) / T
         frac_end = ((i * single_module_width + i * module_spacing) + single_module_width) / T
-        # Compute the module's top face corners:
         front_left  = A_top + frac_start * (B_top - A_top)
         front_right = A_top + frac_end   * (B_top - A_top)
         back_left   = D_top + frac_start * (C_top - D_top)
         back_right  = D_top + frac_end   * (C_top - D_top)
         module_corners = [front_left.tolist(), front_right.tolist(), back_right.tolist(), back_left.tolist()]
-        # Draw the module frame in silver
         for j in range(len(module_corners)):
             add_beam(plotter, module_corners[j], module_corners[(j + 1) % 4],
                      beam_width, beam_thickness, 'silver')
@@ -140,7 +159,6 @@ def create_tilted_frame_with_base(panel_width, panel_depth, height_front, tilt_a
     panel_points = np.array(top_corners)
     panel_faces = np.hstack([[4, 0, 1, 2, 3]])
     panel_poly = pv.PolyData(panel_points, panel_faces)
-    # Compute the normal using the first three points; ensure it points upward.
     A, B, C = panel_points[0], panel_points[1], panel_points[2]
     normal = np.cross(B - A, C - A)
     normal /= np.linalg.norm(normal)
@@ -153,7 +171,8 @@ def create_tilted_frame_with_base(panel_width, panel_depth, height_front, tilt_a
     top_cover = pv.PolyData(top_cover_points, panel_faces)
     plotter.add_mesh(top_cover, color='#1D1D77', opacity=0.8, show_edges=True)
 
-    plotter.show()
+    # Do not call plotter.show() here so that multiple units can be added to the same plotter.
+    return plotter
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -181,12 +200,17 @@ if __name__ == '__main__':
                         help='Block height (default: 0.1 m)')
     parser.add_argument('--panel_extrude_thickness', type=float, default=0.035,
                         help='Solar panel extrusion thickness (default: 0.035 m ≈ 1.38 in)')
-    parser.add_argument('--modules', type=int, default=2,
+    parser.add_argument('--modules', type=int, default=1,
                         help='Number of modules in the frame (default: 2)')
     parser.add_argument('--module_spacing', type=float, default=0.1,
                         help='Spacing between each module (default: 0.1 m)')
-    parser.add_argument('--moduleOrientation', default='Landscape', choices=['Landscape', 'Portrait'],
-                        help='Solar Module Orientation (default: Landscape')
+    parser.add_argument('--moduleOrientation', default='Portrait', choices=['Landscape', 'Portrait'],
+                        help='Solar Module Orientation (default: Landscape)')
+    # New arguments for grid duplication
+    parser.add_argument('--strings', type=int, default=2,
+                        help='Number of rows (strings) of units (default: 2)')
+    parser.add_argument('--columns', type=int, default=3,
+                        help='Number of columns of units (default: 3)')
     args = parser.parse_args()
 
     # Determine conversion factor based on units.
@@ -204,10 +228,10 @@ if __name__ == '__main__':
     total_panel_width = module_count * single_module_width + (module_count - 1) * module_spacing
 
     if module_orientation == "Portrait":
-        panel_depth= args.panel_width * conv
+        panel_depth = args.panel_width * conv
         single_module_width = args.panel_depth * conv
+        total_panel_width = module_count * single_module_width + (module_count - 1) * module_spacing
 
-    total_panel_width = module_count * single_module_width + (module_count - 1) * module_spacing
     beam_width = args.beam_width * conv
     beam_thickness = args.beam_thickness * conv
     extension_length = args.extension_length * conv
@@ -215,8 +239,26 @@ if __name__ == '__main__':
     block_height = args.block_height * conv
     panel_extrude_thickness = args.panel_extrude_thickness * conv
 
-    create_tilted_frame_with_base(total_panel_width, panel_depth, height_front, args.tilt_angle,
-                                  beam_width, beam_thickness,
-                                  extension_length, extender_x, block_height,
-                                  panel_extrude_thickness,
-                                  module_count, single_module_width, module_spacing)
+    # Define grid dimensions.
+    # The horizontal (east-west) unit size is total_panel_width.
+    # The vertical (north-south) full footprint includes the base panel depth plus the extension on both bottom and top.
+    unit_width = total_panel_width
+    unit_depth = panel_depth + 2 * extension_length
+
+    # Create a single plotter for all units.
+    plotter = pv.Plotter()
+
+    # Loop over rows ("strings") and columns ("units" in each row)
+    for row in range(args.strings):
+        for col in range(args.columns):
+            # Calculate offset for each unit.
+            # We add extension_length to the y offset so that the bottom-most extension does not go negative.
+            offset = (col * unit_width, row * unit_depth + extension_length, 0)
+            create_tilted_frame_with_base(total_panel_width, panel_depth, height_front, args.tilt_angle,
+                                          beam_width, beam_thickness,
+                                          extension_length, extender_x, block_height,
+                                          panel_extrude_thickness,
+                                          module_count, single_module_width, module_spacing,
+                                          plotter=plotter, offset=offset)
+
+    plotter.show()
