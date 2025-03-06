@@ -154,11 +154,12 @@ def create_tilted_frame_with_base(panel_width, panel_depth, height_front, tilt_a
         for j in range(len(module_corners)):
             add_beam(plotter, module_corners[j], module_corners[(j + 1) % 4],
                      beam_width, beam_thickness, 'silver')
+       
 
     # Solar panel on the slanted top face
     panel_points = np.array(top_corners)
     panel_faces = np.hstack([[4, 0, 1, 2, 3]])
-    panel_poly = pv.PolyData(panel_points, panel_faces)
+    panel_poly = pv.PolyData(panel_points, panel_faces) #
     A, B, C = panel_points[0], panel_points[1], panel_points[2]
     normal = np.cross(B - A, C - A)
     normal /= np.linalg.norm(normal)
